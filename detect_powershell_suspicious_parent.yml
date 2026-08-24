@@ -1,0 +1,57 @@
+title: Suspicious PowerShell Parent Process (Splunk)
+id: 8a2f3c91-6e4d-4b7a-9f1e-3d5c8b2a7e6f
+status: test
+description: Detects powershell.exe or pwsh.exe spawned by a parent process that is not in the list of known-legitimate parents. Deny-list approach - anything not explicitly whitelisted is flagged.
+author: Mohammad Sadegh Sharifi (https://www.linkedin.com/in/mohammad-sharifi-26b571235/)
+date: 2026-08-24
+tags:
+    - attack.execution
+    - attack.t1059.001
+logsource:
+    category: process_creation
+    product: windows
+    service: sysmon
+
+detection:
+    query: |
+        index=sysmon EventID=1
+        (Image="*\powershell.exe" OR Image="*\pwsh.exe")
+        | where NOT (
+            ParentImage like "%\\explorer.exe"
+            OR ParentImage like "%\\CompatTelRunner.exe"
+            OR ParentImage like "%\\splunkd.exe"
+            OR ParentImage like "%\\SetupHost.exe"
+            OR ParentImage like "%VS Code%"
+            OR ParentImage like "%\\WindowsTerminal.exe"
+            OR ParentImage like "%\\SenseIR.exe"
+            OR ParentImage like "%SplunkUniversalForwarder%"
+            OR ParentImage like "%\\gpscript.exe"
+            OR ParentImage like "%\\wazuh-agent.exe"
+        )
+        | stats count, earliest(UtcTime) as firstTime, latest(UtcTime) as lastTime,
+                values(User) as users, values(CommandLine) as commands
+                by Computer, ParentImage, Image
+        | convert ctime(firstTime)
+        | convert ctime(lastTime)
+        | sort - count
+
+testing:
+    method: WMI process creation
+    command: |
+        wmic process call create "powershell.exe -ep bypass -w hidden -c Start-Sleep -Seconds 5"
+    note: Spawns powershell.exe with parent WmiPrvSE.exe, which is not in the deny-list, so the rule should trigger.
+
+tuning_notes:
+    - High false positive rate expected. Use as a hunting/triage query rather than a high-severity auto alert.
+    - Deny-list should be adjusted to match environment-specific RMM tools and security agents.
+    - Consider raising priority when CommandLine contains -enc, -w hidden, -ep bypass, downloadstring, or iex.
+    - High-risk parents to actively hunt (never whitelist): services.exe, wmiprvse.exe, cmd.exe, wscript.exe, mshta.exe, browsers, office apps.
+
+references:
+    - https://github.com/SigmaHQ/sigma/blob/master/rules/windows/process_creation/proc_creation_win_powershell_non_interactive.yml
+    - https://attack.mitre.org/techniques/T1059/001/
+
+falsepositives:
+    - Admin scripts and RMM tools that legitimately spawn PowerShell from non-whitelisted parents.
+
+level: low
