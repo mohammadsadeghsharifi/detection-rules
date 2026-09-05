@@ -1,17 +1,128 @@
-index=auditd sourcetype="auditd" type="PROCTITLE" 
-| where isnotnull(proctitle) | eval command=proctitle
+title: Suspicious Linux Discovery Commands (Auditd)
+id: 7b3e2f91-8c5d-4a9b-8e2d-4c6d9a3b8f7e
+status: test
+description: Detects execution of common Linux reconnaissance and discovery commands typically associated with post-exploitation activities, privilege escalation enumeration, or penetration testing tools. Uses allowlist approach to filter legitimate system activities.
+author: Mohammad Sadegh Sharifi (https://www.linkedin.com/in/mohammad-sharifi-26b571235/)
+date: 2026-09-05
+tags:
+    - attack.discovery
+    - attack.t1082
+    - attack.t1087
+    - attack.t1123
+    - attack.t1087
+    - execution.reconnaissance
 
-| where NOT match(command, "dpkg|apt-get|apt-config|debconf|postinst|preinst|pam_getenv") 
-| where NOT match(command, "iptables .(DOCKER|MASQUERADE|DNAT|SNAT|POSTROUTING)") 
-| where NOT match(command, "systemctl show --property") 
-| where NOT match(command, "BECOME-SUCCESS|.ansible/tmp|ansible-tmp") 
-| where NOT match(command, "wal-g --config|wal-push") 
-| where NOT match(command, "run-parts --lsbsysinit /etc/update-motd") 
-| where NOT match(command, "update-notifier|dpkg-run-stamp") 
-| where NOT match(command, "wget -q --spider") 
-| where NOT match(command, "sh -c netstat -tulpn | sed") 
-| where NOT match(command, "sh -c netstat -an | grep 8080") 
-| where NOT match(command, "head -v -n 2 /proc/stat /proc/version") 
-| where NOT match(command, "id -u") 
-| where match(lower(command), "whoami|(^|[^a-z])id -[gGu]|find.perm|" + "getfattr|getcap|arp -a|lsof|" + "linenum|linpeas|autosuid|" + "writable|nouser|/etc/shadow|cat.*passwd") 
-| stats min(_time) AS firstTime max(_time) AS lastTime count BY host proctitle | rename host AS dest, proctitle AS commands 
+logsource:
+    category: process_creation
+    product: linux
+    service: auditd
+
+detection:
+    query: |
+        index=auditd sourcetype="auditd" type="PROCTITLE" 
+        | where isnotnull(proctitle) 
+        | eval command=proctitle
+        
+        | where NOT match(command, "dpkg|apt-get|apt-config|debconf|postinst|preinst|pam_getenv") 
+        | where NOT match(command, "iptables .(DOCKER|MASQUERADE|DNAT|SNAT|POSTROUTING)") 
+        | where NOT match(command, "systemctl show --property") 
+        | where NOT match(command, "BECOME-SUCCESS|.ansible/tmp|ansible-tmp") 
+        | where NOT match(command, "wal-g --config|wal-push") 
+        | where NOT match(command, "run-parts --lsbsysinit /etc/update-motd") 
+        | where NOT match(command, "update-notifier|dpkg-run-stamp") 
+        | where NOT match(command, "wget -q --spider") 
+        | where NOT match(command, "sh -c netstat -tulpn | sed") 
+        | where NOT match(command, "sh -c netstat -an | grep 8080") 
+        | where NOT match(command, "head -v -n 2 /proc/stat /proc/version") 
+        | where NOT match(command, "id -u") 
+        
+        | where match(lower(command), "whoami|(^|[^a-z])id -[gGu]|find.perm|getfattr|getcap|arp -a|lsof|linenum|linpeas|autosuid|writable|nouser|/etc/shadow|cat.*passwd")
+        
+        | stats min(_time) AS firstTime, max(_time) AS lastTime, count AS eventCount, 
+                values(user) AS users, values(proctitle) AS commands, 
+                values(hostname) AS hostnames, values(exe) AS executables
+                by host, proctitle
+        | rename host AS dest, proctitle AS command
+        | convert ctime(firstTime)
+        | convert ctime(lastTime)
+        | sort - eventCount
+
+    filter:
+        - detection
+
+testing:
+    method: auditd process tracing
+    commands:
+        - "whoami"
+        - "id -g"
+        - "find / -perm -4000 2>/dev/null"
+        - "getfattr -d /etc/shadow"
+        - "getcap -r / 2>/dev/null"
+        - "arp -a"
+        - "lsof -i -P -n"
+        - "cat /etc/passwd"
+        - "./linenum.sh"
+        - "./linpeas.sh"
+    note: These commands should be captured by auditd and trigger the detection rule when executed outside of expected maintenance windows or automation frameworks.
+
+tuning_notes:
+    - **High false positive rate expected** - Developers, sysadmins, and monitoring tools frequently execute these commands
+    - Adjust allowlist based on:
+        - DevOps/Infrastructure Automation tools (Puppet, Chef, SaltStack)
+        - Container orchestration platforms (Kubernetes, Docker)
+        - Monitoring agents (Nagios, Zabbix, Prometheus exporters)
+        - System administration scripts and cron jobs
+    - **Consider severity boost when combined with:**
+        - Execution from temporary directories (/tmp, /dev/shm, /var/tmp)
+        - Execution by unusual users (www-data, nobody, guest accounts)
+        - Suspicious parent processes (wget, curl, bash from network streams)
+        - Multiple commands in rapid succession (reconnaissance sweep)
+        - Execution from unexpected locations (curl | bash, wget | bash patterns)
+    - **High-risk scenarios (never ignore):**
+        - whoami/id executed by web application user (www-data, apache, nginx)
+        - find . -perm combined with subsequent chmod/chown commands
+        - /etc/shadow or /etc/gshadow access attempts
+        - Execution of known Linux enumeration tools (linpeas, linenum, lse.sh, etc.)
+        - arp/iptables commands from non-root or non-expected users
+    - Correlate with failed privilege escalation attempts (sudo logs)
+    - Monitor for subsequent command execution following discovery
+
+correlation:
+    - Correlate successful discovery commands with:
+        - Failed sudo/su attempts (privilege escalation attempts)
+        - Compilation of exploits (gcc, cc commands)
+        - Installation of persistence mechanisms (cron jobs, systemd units)
+        - Network reconnaissance (nmap, netcat, curl to internal IPs)
+
+references:
+    - https://attack.mitre.org/techniques/T1082/
+    - https://attack.mitre.org/techniques/T1087/
+    - https://github.com/carlospolop/PEASS-ng
+    - https://github.com/HarmJ0y/OSINT-Mindmap
+    - https://gtfobins.github.io/
+    - https://linux-audit.com/
+    - https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/7/html/security_guide/chap-system_auditing
+
+falsepositives:
+    - System administration scripts and scheduled tasks
+    - Infrastructure automation (Ansible, Puppet, Chef, SaltStack)
+    - Monitoring agents and health check scripts (Nagios plugins, Zabbix agents)
+    - Legitimate security assessments and vulnerability scanning
+    - Container runtime initialization and health checks
+    - System service startup scripts
+    - Software installation and configuration management
+    - Continuous integration/deployment pipelines
+    - Backup and system maintenance tools
+    - Educational or training environments
+
+level: medium
+severity: 
+    default: medium
+    with_risky_parent: high
+    from_web_user: critical
+    with_suspicious_chain: critical
+    
+filter_bypass_suggestions:
+    - Consider monitoring for process injection or hidden execution
+    - Audit log tampering or deletion attempts
+    - Alternative Linux enumeration methods (direct /proc parsing, library calls)
