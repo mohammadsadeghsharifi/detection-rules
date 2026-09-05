@@ -1,0 +1,17 @@
+index=auditd sourcetype="auditd" type="PROCTITLE" 
+| where isnotnull(proctitle) | eval command=proctitle
+
+| where NOT match(command, "dpkg|apt-get|apt-config|debconf|postinst|preinst|pam_getenv") 
+| where NOT match(command, "iptables .(DOCKER|MASQUERADE|DNAT|SNAT|POSTROUTING)") 
+| where NOT match(command, "systemctl show --property") 
+| where NOT match(command, "BECOME-SUCCESS|.ansible/tmp|ansible-tmp") 
+| where NOT match(command, "wal-g --config|wal-push") 
+| where NOT match(command, "run-parts --lsbsysinit /etc/update-motd") 
+| where NOT match(command, "update-notifier|dpkg-run-stamp") 
+| where NOT match(command, "wget -q --spider") 
+| where NOT match(command, "sh -c netstat -tulpn | sed") 
+| where NOT match(command, "sh -c netstat -an | grep 8080") 
+| where NOT match(command, "head -v -n 2 /proc/stat /proc/version") 
+| where NOT match(command, "id -u") 
+| where match(lower(command), "whoami|(^|[^a-z])id -[gGu]|find.perm|" + "getfattr|getcap|arp -a|lsof|" + "linenum|linpeas|autosuid|" + "writable|nouser|/etc/shadow|cat.*passwd") 
+| stats min(_time) AS firstTime max(_time) AS lastTime count BY host proctitle | rename host AS dest, proctitle AS commands 
